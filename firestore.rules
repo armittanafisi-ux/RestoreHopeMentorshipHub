@@ -1,0 +1,143 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function ownsProfile(userId) {
+      return request.auth != null
+        && request.auth.uid == userId;
+    }
+
+    function validText(data, field, limit) {
+      let value = data.get(field, '');
+      return value is string
+        && value.size() <= limit;
+    }
+
+    function validAvailability(selections) {
+      return selections is list
+        && selections.size() <= 21
+        && selections.hasOnly([
+          'Sunday-Morning',
+          'Sunday-Afternoon',
+          'Sunday-Evening',
+          'Monday-Morning',
+          'Monday-Afternoon',
+          'Monday-Evening',
+          'Tuesday-Morning',
+          'Tuesday-Afternoon',
+          'Tuesday-Evening',
+          'Wednesday-Morning',
+          'Wednesday-Afternoon',
+          'Wednesday-Evening',
+          'Thursday-Morning',
+          'Thursday-Afternoon',
+          'Thursday-Evening',
+          'Friday-Morning',
+          'Friday-Afternoon',
+          'Friday-Evening',
+          'Saturday-Morning',
+          'Saturday-Afternoon',
+          'Saturday-Evening'
+        ]);
+    }
+
+    // Validate the document created during signup.
+    function validProfile(data) {
+      let fields = [
+        'firstName',
+        'lastName',
+        'email',
+        'role',
+        'phone',
+        'dateOfBirth',
+        'communication',
+        'availability',
+        'createdAt'
+      ];
+
+      return data.keys().hasAll(fields)
+        && data.keys().hasOnly(fields)
+
+        && data.firstName is string
+        && data.firstName.size() > 0
+        && data.firstName.size() <= 100
+
+        && data.lastName is string
+        && data.lastName.size() > 0
+        && data.lastName.size() <= 100
+
+        && data.email is string
+        && data.email == request.auth.token.email
+
+        && data.role in ['mentor', 'mentee']
+
+        && data.phone is string
+        && data.phone.size() <= 30
+
+        && data.dateOfBirth is string
+        && data.dateOfBirth.size() <= 10
+
+        && data.communication in ['', 'email', 'phone', 'text']
+
+        && validAvailability(data.availability)
+
+        && data.createdAt is timestamp
+        && data.createdAt == request.time;
+    }
+
+    // Allow changes only to editable profile fields.
+    function validProfileUpdate(data) {
+      return data.diff(resource.data).affectedKeys().hasOnly([
+          'name',
+          'location',
+          'favoriteColor',
+          'personality',
+          'interest',
+          'goals',
+          'hobbies',
+          'availability',
+          'updatedAt'
+        ])
+
+        && validText(data, 'name', 201)
+        && validText(data, 'location', 2000)
+        && validText(data, 'favoriteColor', 2000)
+        && validText(data, 'personality', 2000)
+        && validText(data, 'interest', 2000)
+        && validText(data, 'goals', 2000)
+        && validText(data, 'hobbies', 2000)
+
+        && validAvailability(data.availability)
+
+        && data.keys().hasAll(['updatedAt'])
+        && data.updatedAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if ownsProfile(userId);
+
+      allow create: if ownsProfile(userId)
+        && validProfile(request.resource.data);
+
+      allow update: if ownsProfile(userId)
+        && validProfileUpdate(request.resource.data);
+
+      allow list, delete: if false;
+    }
+
+    // Block access until collection permissions are defined.
+    match /goals/{goalId} {
+      allow read, write: if false;
+    }
+
+    match /meetings/{meetingId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
