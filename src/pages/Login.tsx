@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { FirebaseError } from "firebase/app";
 import {
   onAuthStateChanged,
@@ -12,43 +12,98 @@ import { FcGoogle } from "react-icons/fc";
 import { FaApple } from "react-icons/fa6";
 import { auth } from "../firebaseConfig";
 
+type AuthAction = "login" | "logout";
+
 export default function Login() {
+  const navigate = useNavigate();
+
   const [user, setUser] = useState<User | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [pendingAction, setPendingAction] =
+    useState<AuthAction | null>(null);
   const [error, setError] = useState("");
+
+  const mounted = useRef(false);
+  const requestInProgress = useRef(false);
+
+  const saving = pendingAction !== null;
 
   const inputClass =
     "h-12 w-full bg-[#fffaff] px-3 text-base text-[#3c2941] focus:outline-none focus:ring-2 focus:ring-[#73457d]";
 
-  // Track login, logout, and restored sessions after refreshing.
+  // Track login, logout, and restored sessions.
   useEffect(() => {
+    let active = true;
+    mounted.current = true;
+
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (!active) {
+        return;
+      }
+
       setUser(currentUser);
       setCheckingSession(false);
     });
 
-    return unsubscribe;
+    return () => {
+      active = false;
+      mounted.current = false;
+      unsubscribe();
+    };
   }, []);
+
+  // Prevent overlapping login and logout requests.
+  function beginAction(action: AuthAction): boolean {
+    if (!mounted.current || requestInProgress.current) {
+      return false;
+    }
+
+    requestInProgress.current = true;
+    setPendingAction(action);
+    setError("");
+
+    return true;
+  }
+
+  function finishAction() {
+    requestInProgress.current = false;
+
+    if (mounted.current) {
+      setPendingAction(null);
+    }
+  }
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    if (saving) {
-      return;
-    }
 
     const formData = new FormData(event.currentTarget);
     const email = String(formData.get("email") ?? "").trim();
     const password = String(formData.get("password") ?? "");
 
-    setError("");
-    setSaving(true);
+    if (!beginAction("login")) {
+      return;
+    }
 
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const credential = await signInWithEmailAndPassword(
+        auth,
+        email,
+        password
+      );
+
+      if (
+        mounted.current &&
+        auth.currentUser?.uid === credential.user.uid
+      ) {
+        // ProtectedRoute checks the saved role before showing the page.
+        void navigate("/", { replace: true });
+      }
     } catch (cause) {
       console.error("Login failed:", cause);
+
+      if (!mounted.current) {
+        return;
+      }
 
       if (cause instanceof FirebaseError) {
         if (
@@ -72,25 +127,33 @@ export default function Login() {
         setError("Unable to log in. Please try again.");
       }
     } finally {
-      setSaving(false);
+      finishAction();
     }
   }
 
-  async function handleLogout() {
-    if (saving) {
+  function handleOpenDashboard() {
+    if (!mounted.current || requestInProgress.current) {
       return;
     }
 
-    setError("");
-    setSaving(true);
+    void navigate("/", { replace: true });
+  }
+
+  async function handleLogout() {
+    if (!beginAction("logout")) {
+      return;
+    }
 
     try {
       await signOut(auth);
     } catch (cause) {
       console.error("Logout failed:", cause);
-      setError("Unable to log out. Please try again.");
+
+      if (mounted.current) {
+        setError("Unable to log out. Please try again.");
+      }
     } finally {
-      setSaving(false);
+      finishAction();
     }
   }
 
@@ -110,7 +173,7 @@ export default function Login() {
       <div className="mx-auto w-full max-w-sm sm:w-[52%] sm:max-w-[26rem]">
         {checkingSession ? (
           <p role="status" className="text-center">
-            Checking sign-in…
+            Checking sign-in...
           </p>
         ) : user ? (
           <section className="rounded-xl bg-[#fffaff] p-6 text-center">
@@ -120,14 +183,29 @@ export default function Login() {
               {user.email}
             </p>
 
-            <button
-              type="button"
-              onClick={handleLogout}
-              disabled={saving}
-              className="mt-6 rounded-lg bg-[#b8dedb] px-8 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {saving ? "LOGGING OUT..." : "LOG OUT"}
-            </button>
+            <div className="mt-6 flex flex-col items-center gap-3">
+              <button
+                type="button"
+                onClick={handleOpenDashboard}
+                disabled={saving}
+                className="rounded-lg bg-[#b8dedb] px-8 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {pendingAction === "login"
+                  ? "OPENING DASHBOARD..."
+                  : "OPEN DASHBOARD"}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleLogout}
+                disabled={saving}
+                className="rounded-lg bg-[#b8dedb] px-8 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {pendingAction === "logout"
+                  ? "LOGGING OUT..."
+                  : "LOG OUT"}
+              </button>
+            </div>
           </section>
         ) : (
           <>
@@ -180,7 +258,9 @@ export default function Login() {
                 disabled={saving}
                 className="mx-auto block bg-[#fffaff] px-10 py-1.5 text-sm hover:bg-[#b8dedb] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {saving ? "LOGGING IN..." : "LOG IN"}
+                {pendingAction === "login"
+                  ? "LOGGING IN..."
+                  : "LOG IN"}
               </button>
             </form>
 
